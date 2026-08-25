@@ -72,6 +72,8 @@ import com.maxpi.openbikecompanion.protocol.C406Protocol.METRIC_NAMES
 import com.maxpi.openbikecompanion.protocol.C406PagesCodec
 import java.util.UUID
 import com.maxpi.openbikecompanion.ble.BleScanner
+import com.maxpi.openbikecompanion.ble.C406GattIo
+import com.maxpi.openbikecompanion.ble.C406GattIo.StartResult
 
 
 private enum class ReadPurpose {
@@ -554,20 +556,23 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun discoverServicesSafe(gatt: BluetoothGatt) {
-        try {
-            val started = gatt.discoverServices()
-
-            runOnUiThread {
-                statusText =
-                    if (started) {
-                        "Discovering services..."
-                    } else {
-                        "Could not start service discovery"
-                    }
+        when (C406GattIo.discoverServices(gatt)) {
+            StartResult.STARTED -> {
+                runOnUiThread {
+                    statusText = "Discovering services..."
+                }
             }
-        } catch (_: SecurityException) {
-            runOnUiThread {
-                statusText = "Bluetooth permission lost"
+
+            StartResult.NOT_STARTED -> {
+                runOnUiThread {
+                    statusText = "Could not start service discovery"
+                }
+            }
+
+            StartResult.PERMISSION_DENIED -> {
+                runOnUiThread {
+                    statusText = "Bluetooth permission lost"
+                }
             }
         }
     }
@@ -589,14 +594,16 @@ class MainActivity : ComponentActivity() {
 
         readPurpose = purpose
 
-        try {
-            characteristic.writeType =
-                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            characteristic.value = byteArrayOf(0x40, 0x42)
+        when (
+            C406GattIo.write(
+                gatt = gatt,
+                characteristic = characteristic,
+                value = byteArrayOf(0x40, 0x42)
+            )
+        ) {
+            StartResult.STARTED -> Unit
 
-            val started = gatt.writeCharacteristic(characteristic)
-
-            if (!started) {
+            StartResult.NOT_STARTED -> {
                 readPurpose = ReadPurpose.NORMAL
 
                 runOnUiThread {
@@ -608,16 +615,18 @@ class MainActivity : ComponentActivity() {
                     clearPendingOperation()
                 }
             }
-        } catch (_: SecurityException) {
-            readPurpose = ReadPurpose.NORMAL
 
-            runOnUiThread {
-                statusText = "Bluetooth permission lost"
-                writeInProgress = false
-            }
+            StartResult.PERMISSION_DENIED -> {
+                readPurpose = ReadPurpose.NORMAL
 
-            if (purpose != ReadPurpose.NORMAL) {
-                clearPendingOperation()
+                runOnUiThread {
+                    statusText = "Bluetooth permission lost"
+                    writeInProgress = false
+                }
+
+                if (purpose != ReadPurpose.NORMAL) {
+                    clearPendingOperation()
+                }
             }
         }
     }
@@ -663,14 +672,16 @@ class MainActivity : ComponentActivity() {
 
         writePurpose = purpose
 
-        try {
-            characteristic.writeType =
-                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            characteristic.value = packet
+        when (
+            C406GattIo.write(
+                gatt = gatt,
+                characteristic = characteristic,
+                value = packet
+            )
+        ) {
+            StartResult.STARTED -> Unit
 
-            val started = gatt.writeCharacteristic(characteristic)
-
-            if (!started) {
+            StartResult.NOT_STARTED -> {
                 writePurpose = WritePurpose.NONE
 
                 runOnUiThread {
@@ -687,15 +698,17 @@ class MainActivity : ComponentActivity() {
                         }
                 )
             }
-        } catch (_: SecurityException) {
-            writePurpose = WritePurpose.NONE
 
-            runOnUiThread {
-                statusText = "Bluetooth permission lost"
-                writeInProgress = false
+            StartResult.PERMISSION_DENIED -> {
+                writePurpose = WritePurpose.NONE
+
+                runOnUiThread {
+                    statusText = "Bluetooth permission lost"
+                    writeInProgress = false
+                }
+
+                clearPendingOperation()
             }
-
-            clearPendingOperation()
         }
     }
 
