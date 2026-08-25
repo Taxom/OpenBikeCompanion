@@ -94,6 +94,11 @@ private enum class RiderProfileField(
     LTHR("LTHR", "bpm"),
     VEHICLE_WEIGHT("Vehicle Weight", "kg")
 }
+private enum class DeviceScreen {
+    DEVICE,
+    PAGES,
+    RIDER_PROFILE
+}
 
 @Suppress("DEPRECATION")
 @SuppressLint("MissingPermission")
@@ -1151,6 +1156,7 @@ class MainActivity : ComponentActivity() {
         clearPendingOperation()
         connectedAddress = null
         writeInProgress = false
+        statusText = "Disconnected"
     }
 }
 
@@ -1190,6 +1196,10 @@ private fun AppScreen(
 ) {
     var permissionsGranted by remember {
         mutableStateOf(hasPermissions())
+    }
+
+    var currentScreen by remember {
+        mutableStateOf(DeviceScreen.DEVICE)
     }
 
     var selectedPageNumber by remember {
@@ -1272,7 +1282,23 @@ private fun AppScreen(
                 }
             }
 
-            if (!permissionsGranted) {
+            if (currentScreen != DeviceScreen.DEVICE) {
+                item {
+                    OutlinedButton(
+                        enabled = !writeInProgress,
+                        onClick = {
+                            currentScreen = DeviceScreen.DEVICE
+                            editingFieldIndex = null
+                            editingProfileField = null
+                        }
+                    ) {
+                        Text("Back to Device")
+                    }
+                }
+            }
+
+            if (currentScreen == DeviceScreen.DEVICE) {
+                if (!permissionsGranted) {
                 item {
                     Button(
                         onClick = {
@@ -1345,14 +1371,59 @@ private fun AppScreen(
                 }
             }
 
-            if (editedPages.isNotEmpty()) {
+                if (connectedAddress != null) {
+                    item {
+                        HorizontalDivider()
+                    }
+
+                    item {
+                        Text(
+                            text = "Device settings",
+                            style = MaterialTheme.typography.titleLarge
+                        )
+                    }
+
+                    item {
+                        Button(
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled =
+                                editedPages.isNotEmpty() &&
+                                        !writeInProgress,
+                            onClick = {
+                                currentScreen = DeviceScreen.PAGES
+                            }
+                        ) {
+                            Text("Pages")
+                        }
+                    }
+
+                    item {
+                        Button(
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled =
+                                editedProfile != null &&
+                                        !writeInProgress,
+                            onClick = {
+                                currentScreen = DeviceScreen.RIDER_PROFILE
+                            }
+                        ) {
+                            Text("Rider Profile")
+                        }
+                    }
+                }
+            }
+
+            if (
+                currentScreen == DeviceScreen.PAGES &&
+                editedPages.isNotEmpty()
+            ) {
                 item {
                     HorizontalDivider()
                 }
 
                 item {
                     Text(
-                        text = "Pages editor",
+                        text = "Pages",
                         style = MaterialTheme.typography.titleLarge
                     )
 
@@ -1450,7 +1521,10 @@ private fun AppScreen(
                 }
             }
 
-            if (editedProfile != null) {
+            if (
+                currentScreen == DeviceScreen.RIDER_PROFILE &&
+                editedProfile != null
+            ) {
                 item {
                     HorizontalDivider()
                 }
@@ -2206,6 +2280,7 @@ private fun ScrollIndicator(
         )
     }
 }
+
 
 
 
