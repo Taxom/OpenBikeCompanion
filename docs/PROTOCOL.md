@@ -308,45 +308,161 @@ Heart-rate family
 
 Clock cannot be displayed correctly in the middle row because of the physical digit/colon segment arrangement.
 
+## Rider profile
+
+Rider-profile read and write are confirmed on a physical Magene C406.
+
+The profile stored on the bike computer contains the numeric rider parameters used by the device. First name, last name, and date of birth are not present in this BLE payload; the application converts date of birth to age before synchronizing the profile.
+
+### Read rider profile
+
+Request:
+
+```text
+40 40
+```
+
+Successful response:
+
+```text
+40 40 00 <11-byte profile payload>
+```
+
+Confirmed example:
+
+```text
+40 40 00 02 2C AF BE B4 96 00 F2 03 84 17
+```
+
+Payload layout after the `00` status byte:
+
+```text
+byte 0      Gender raw value
+byte 1      Age, years
+byte 2      Height, cm
+byte 3      Maximum heart rate, bpm
+byte 4      LTHR, bpm
+bytes 5-6   FTP, uint16 little-endian, watts
+bytes 7-8   Vehicle weight, uint16 little-endian, 0.01 kg units
+bytes 9-10  Rider weight, uint16 little-endian, 0.01 kg units
+```
+
+The confirmed example above decodes as:
+
+```text
+Gender raw      02
+Age             44 years
+Height          175 cm
+Max HR          190 bpm
+LTHR            180 bpm
+FTP             150 W
+Vehicle weight  10.10 kg
+Rider weight    60.20 kg
+```
+
+`Gender = 02` has been observed for an unset / not-selected profile. The meanings of the other possible gender values have not yet been confirmed.
+
+### Write rider profile
+
+Request:
+
+```text
+40 41 <11-byte profile payload>
+```
+
+Successful acknowledgement:
+
+```text
+40 41 00
+```
+
+Write and readback have been verified end-to-end on real hardware. In one test, changing rider weight from `60.10 kg` to `60.20 kg` produced:
+
+```text
+TX  40 41 02 2C AF BE B4 96 00 F2 03 84 17
+RX  40 41 00
+```
+
+A subsequent `40 40` read returned the same payload, confirming that the new profile was stored by the C406.
+
 ## Function settings
 
-Function-settings read and write are confirmed.
+Function-settings read and write are confirmed on a physical Magene C406.
 
 ### Read function settings
 
 Request:
 
 ```text
-40 4C <unix_time_le32>
+40 4C
 ```
 
-Example response:
+Successful response:
 
 ```text
-40 4C 00 13 01 00 00 01 01 01 01 B4 00 00
+40 4C 00 <11-byte settings payload>
 ```
 
-Observed payload layout after the `00` status byte:
+Confirmed example:
 
 ```text
-byte 0   Time-zone raw value
-byte 1   Auto backlight
-byte 2   Auto shutdown
-byte 3   Auto Pause
-byte 4   Function tone
-byte 5   Keyboard clicks
-byte 6   Estimated power
-byte 7   Start reminding
-byte 8   Heart-rate warning value
-byte 9   Power warning byte 0
-byte 10  Power warning byte 1
+40 4C 00 08 01 03 00 01 01 01 01 B5 C8 00
 ```
 
-Boolean values observed so far use:
+Payload layout after the `00` status byte:
+
+```text
+byte 0      Time-zone raw value
+byte 1      Auto backlight
+byte 2      Auto shutdown timeout, minutes
+byte 3      Auto Pause
+byte 4      Function tone
+byte 5      Keyboard clicks
+byte 6      Estimated power
+byte 7      Start reminding
+byte 8      Heart-rate warning threshold, bpm
+bytes 9-10  Power warning threshold, uint16 little-endian, watts
+```
+
+Confirmed boolean values use:
 
 ```text
 00 = Off
 01 = On
+```
+
+Confirmed time-zone values include:
+
+```text
+07 = UTC+7
+08 = UTC+8
+```
+
+The value `1C` has also been observed when the original application was using the phone/system time-zone synchronization mode. Its exact semantics are therefore currently **Inferred**, not Confirmed.
+
+Auto shutdown is stored as a timeout value rather than a simple Boolean:
+
+```text
+00 = disabled
+03 = 3 minutes
+05 = 5 minutes
+```
+
+The `03` value was verified by writing it to the C406 and observing that the unit powered off exactly three minutes after the BLE connection ended.
+
+Heart-rate warning uses the threshold byte directly:
+
+```text
+00 = disabled
+B4 = 180 bpm
+B5 = 181 bpm
+```
+
+Power warning uses a little-endian 16-bit threshold:
+
+```text
+00 00 = disabled
+C8 00 = 200 W
 ```
 
 ### Write function settings
@@ -363,7 +479,20 @@ Successful acknowledgement:
 40 4D 00
 ```
 
-Keyboard-click enable/disable has been successfully changed and verified on real hardware.
+Write and readback have been verified end-to-end on real hardware.
+
+For example, changing Auto shutdown from five minutes to three minutes produced:
+
+```text
+TX  40 4D 08 01 03 00 01 01 01 01 B5 C8 00
+RX  40 4D 00
+```
+
+A subsequent `40 4C` read returned:
+
+```text
+40 4C 00 08 01 03 00 01 01 01 01 B5 C8 00
+```
 
 ## Ride list
 
@@ -419,8 +548,6 @@ The following commands have been observed but are not yet fully documented:
 
 ```text
 40 08
-40 40
-40 41
 40 44
 40 4E
 40 4F
