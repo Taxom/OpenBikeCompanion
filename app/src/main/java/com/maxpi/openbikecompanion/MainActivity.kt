@@ -899,7 +899,7 @@ class MainActivity : ComponentActivity() {
                     runOnUiThread {
                         devicePages = pages
                         editedPages = pages
-                        statusText = "Apply verified â€” C406 Pages updated"
+                        statusText = "Apply verified — C406 Pages updated"
                         writeInProgress = false
                     }
 
@@ -1308,7 +1308,7 @@ private fun AppScreen(
             if (writeInProgress) {
                 item {
                     Text(
-                        text = "Write/verify in progress â€” do not disconnect",
+                        text = "Write/verify in progress — do not disconnect",
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -1401,7 +1401,7 @@ private fun AppScreen(
                     Text(
                         text =
                             if (hasLocalChanges) {
-                                "Local changes only â€” NOT sent to C406 yet"
+                                "Local changes only — NOT sent to C406 yet"
                             } else {
                                 "Showing configuration confirmed on C406"
                             },
@@ -1782,7 +1782,7 @@ private fun MetricPickerDialog(
                                     Text(
                                         text =
                                             if (selected) {
-                                                "âœ“ $name"
+                                                "✓ $name"
                                             } else {
                                                 name
                                             },
