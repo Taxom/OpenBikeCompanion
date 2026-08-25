@@ -10,8 +10,6 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
-import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanResult
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -73,6 +71,9 @@ import com.maxpi.openbikecompanion.protocol.C406Protocol.FIELD_POSITIONS
 import com.maxpi.openbikecompanion.protocol.C406Protocol.METRIC_NAMES
 import com.maxpi.openbikecompanion.protocol.C406PagesCodec
 import java.util.UUID
+import com.maxpi.openbikecompanion.ble.BleScanner
+import com.maxpi.openbikecompanion.ble.C406GattIo
+import com.maxpi.openbikecompanion.ble.C406GattIo.StartResult
 
 
 private enum class ReadPurpose {
@@ -131,46 +132,33 @@ class MainActivity : ComponentActivity() {
         manager.adapter
     }
 
-    private val scanCallback = object : ScanCallback() {
-        override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val device = result.device
+    private val bleScanner: BleScanner by lazy {
+        BleScanner(
+            bluetoothAdapter = bluetoothAdapter,
+            onDeviceFound = { item ->
+                runOnUiThread {
+                    val index = devices.indexOfFirst { it.address == item.address }
 
-            val name = try {
-                device.name ?: result.scanRecord?.deviceName ?: "(unnamed)"
-            } catch (_: SecurityException) {
-                result.scanRecord?.deviceName ?: "(unnamed)"
-            }
+                    if (index >= 0) {
+                        devices[index] = item
+                    } else {
+                        devices.add(item)
+                    }
 
-            val item = BleDeviceUi(
-                address = device.address,
-                name = name,
-                rssi = result.rssi
-            )
-
-            runOnUiThread {
-                val index = devices.indexOfFirst { it.address == item.address }
-
-                if (index >= 0) {
-                    devices[index] = item
-                } else {
-                    devices.add(item)
+                    val sorted = devices.sortedByDescending { it.rssi }
+                    devices.clear()
+                    devices.addAll(sorted)
                 }
-
-                val sorted = devices.sortedByDescending { it.rssi }
-                devices.clear()
-                devices.addAll(sorted)
-
-
+            },
+            onScanFailed = { errorCode ->
+                runOnUiThread {
+                    isScanning = false
+                    statusText = "BLE scan failed: $errorCode"
+                }
             }
-        }
-
-        override fun onScanFailed(errorCode: Int) {
-            runOnUiThread {
-                isScanning = false
-                statusText = "BLE scan failed: $errorCode"
-            }
-        }
+        )
     }
+
 
     private val gattCallback = object : BluetoothGattCallback() {
 
@@ -504,9 +492,7 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        val scanner = bluetoothAdapter?.bluetoothLeScanner
-
-        if (scanner == null) {
+        if (!bleScanner.isAvailable()) {
             statusText = "BLE scanner unavailable"
             return
         }
@@ -514,14 +500,10 @@ class MainActivity : ComponentActivity() {
         devices.clear()
         statusText = "Scanning..."
         isScanning = true
-        scanner.startScan(scanCallback)
+        bleScanner.start()
     }
-
     private fun stopScan() {
-        try {
-            bluetoothAdapter?.bluetoothLeScanner?.stopScan(scanCallback)
-        } catch (_: SecurityException) {
-        }
+        bleScanner.stop()
 
         isScanning = false
 
@@ -574,20 +556,23 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun discoverServicesSafe(gatt: BluetoothGatt) {
-        try {
-            val started = gatt.discoverServices()
-
-            runOnUiThread {
-                statusText =
-                    if (started) {
-                        "Discovering services..."
-                    } else {
-                        "Could not start service discovery"
-                    }
+        when (C406GattIo.discoverServices(gatt)) {
+            StartResult.STARTED -> {
+                runOnUiThread {
+                    statusText = "Discovering services..."
+                }
             }
-        } catch (_: SecurityException) {
-            runOnUiThread {
-                statusText = "Bluetooth permission lost"
+
+            StartResult.NOT_STARTED -> {
+                runOnUiThread {
+                    statusText = "Could not start service discovery"
+                }
+            }
+
+            StartResult.PERMISSION_DENIED -> {
+                runOnUiThread {
+                    statusText = "Bluetooth permission lost"
+                }
             }
         }
     }
@@ -609,14 +594,16 @@ class MainActivity : ComponentActivity() {
 
         readPurpose = purpose
 
-        try {
-            characteristic.writeType =
-                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            characteristic.value = byteArrayOf(0x40, 0x42)
+        when (
+            C406GattIo.write(
+                gatt = gatt,
+                characteristic = characteristic,
+                value = byteArrayOf(0x40, 0x42)
+            )
+        ) {
+            StartResult.STARTED -> Unit
 
-            val started = gatt.writeCharacteristic(characteristic)
-
-            if (!started) {
+            StartResult.NOT_STARTED -> {
                 readPurpose = ReadPurpose.NORMAL
 
                 runOnUiThread {
@@ -628,16 +615,18 @@ class MainActivity : ComponentActivity() {
                     clearPendingOperation()
                 }
             }
-        } catch (_: SecurityException) {
-            readPurpose = ReadPurpose.NORMAL
 
-            runOnUiThread {
-                statusText = "Bluetooth permission lost"
-                writeInProgress = false
-            }
+            StartResult.PERMISSION_DENIED -> {
+                readPurpose = ReadPurpose.NORMAL
 
-            if (purpose != ReadPurpose.NORMAL) {
-                clearPendingOperation()
+                runOnUiThread {
+                    statusText = "Bluetooth permission lost"
+                    writeInProgress = false
+                }
+
+                if (purpose != ReadPurpose.NORMAL) {
+                    clearPendingOperation()
+                }
             }
         }
     }
@@ -683,14 +672,16 @@ class MainActivity : ComponentActivity() {
 
         writePurpose = purpose
 
-        try {
-            characteristic.writeType =
-                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            characteristic.value = packet
+        when (
+            C406GattIo.write(
+                gatt = gatt,
+                characteristic = characteristic,
+                value = packet
+            )
+        ) {
+            StartResult.STARTED -> Unit
 
-            val started = gatt.writeCharacteristic(characteristic)
-
-            if (!started) {
+            StartResult.NOT_STARTED -> {
                 writePurpose = WritePurpose.NONE
 
                 runOnUiThread {
@@ -707,15 +698,17 @@ class MainActivity : ComponentActivity() {
                         }
                 )
             }
-        } catch (_: SecurityException) {
-            writePurpose = WritePurpose.NONE
 
-            runOnUiThread {
-                statusText = "Bluetooth permission lost"
-                writeInProgress = false
+            StartResult.PERMISSION_DENIED -> {
+                writePurpose = WritePurpose.NONE
+
+                runOnUiThread {
+                    statusText = "Bluetooth permission lost"
+                    writeInProgress = false
+                }
+
+                clearPendingOperation()
             }
-
-            clearPendingOperation()
         }
     }
 
