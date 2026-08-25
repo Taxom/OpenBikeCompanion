@@ -57,10 +57,12 @@ import com.maxpi.openbikecompanion.ui.theme.OpenBikeCompanionTheme
 import com.maxpi.openbikecompanion.model.BleDeviceUi
 import com.maxpi.openbikecompanion.model.PageFieldUi
 import com.maxpi.openbikecompanion.model.PageUi
+import com.maxpi.openbikecompanion.model.C406RiderProfile
 import com.maxpi.openbikecompanion.protocol.C406Protocol.ALLOWED_METRICS_BY_FIELD
 import com.maxpi.openbikecompanion.protocol.C406Protocol.FIELD_POSITIONS
 import com.maxpi.openbikecompanion.protocol.C406Protocol.METRIC_NAMES
 import com.maxpi.openbikecompanion.protocol.C406PagesCodec
+import com.maxpi.openbikecompanion.protocol.C406ProfileCodec
 import com.maxpi.openbikecompanion.ble.BleScanner
 import com.maxpi.openbikecompanion.ble.C406GattSession
 import com.maxpi.openbikecompanion.ble.C406GattIo.StartResult
@@ -100,6 +102,14 @@ class MainActivity : ComponentActivity() {
     private var editedPages by mutableStateOf<List<PageUi>>(emptyList())
 
     private var rawPagesResponse by mutableStateOf("")
+
+    private var deviceProfile by mutableStateOf<C406RiderProfile?>(null)
+    private var editedProfile by mutableStateOf<C406RiderProfile?>(null)
+    private var rawProfileResponse by mutableStateOf("")
+
+    private var pendingProfileApply: C406RiderProfile? = null
+    private var profileWriteAwaitingGattResult = false
+    private var profileVerifyPending = false
 
     private var writeInProgress by mutableStateOf(false)
 
@@ -337,6 +347,9 @@ class MainActivity : ComponentActivity() {
         devicePages = emptyList()
         editedPages = emptyList()
         rawPagesResponse = ""
+        deviceProfile = null
+        editedProfile = null
+        rawProfileResponse = ""
         statusText = "Connecting..."
 
         c406Session.connect(address)
@@ -459,10 +472,98 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    private fun sendProfileRead() {
+        when (c406Session.write(C406ProfileCodec.READ_COMMAND)) {
+            StartResult.STARTED -> {
+                runOnUiThread {
+                    statusText = "Reading Rider Profile..."
+                }
+            }
+
+            StartResult.NOT_STARTED -> {
+                runOnUiThread {
+                    statusText = "Could not send 40 40"
+                    writeInProgress = false
+                }
+                clearPendingOperation()
+            }
+
+            StartResult.PERMISSION_DENIED -> {
+                runOnUiThread {
+                    statusText = "Bluetooth permission lost"
+                    writeInProgress = false
+                }
+                clearPendingOperation()
+            }
+        }
+    }
+
+    private fun sendProfileWrite(profile: C406RiderProfile) {
+        val packet = C406ProfileCodec.buildWritePacket(profile)
+
+        if (packet == null) {
+            runOnUiThread {
+                statusText = "Invalid Rider Profile; write cancelled"
+                writeInProgress = false
+            }
+            clearPendingOperation()
+            return
+        }
+
+        pendingProfileApply = profile
+        profileWriteAwaitingGattResult = true
+        profileVerifyPending = false
+        writeInProgress = true
+
+        when (c406Session.write(packet)) {
+            StartResult.STARTED -> Unit
+
+            StartResult.NOT_STARTED -> {
+                profileWriteAwaitingGattResult = false
+
+                runOnUiThread {
+                    statusText = "Could not send 40 41"
+                    writeInProgress = false
+                }
+
+                clearPendingOperation()
+            }
+
+            StartResult.PERMISSION_DENIED -> {
+                profileWriteAwaitingGattResult = false
+
+                runOnUiThread {
+                    statusText = "Bluetooth permission lost"
+                    writeInProgress = false
+                }
+
+                clearPendingOperation()
+            }
+        }
+    }
     private fun handleGattWriteResult(
         success: Boolean,
         status: Int
     ) {
+        if (profileWriteAwaitingGattResult) {
+            profileWriteAwaitingGattResult = false
+
+            if (success) {
+                runOnUiThread {
+                    statusText = "40 41 sent; waiting for C406 ACK..."
+                }
+            } else {
+                runOnUiThread {
+                    statusText = "Profile GATT write failed: $status"
+                    writeInProgress = false
+                }
+
+                clearPendingOperation()
+            }
+
+            return
+        }
+
         val currentWritePurpose = writePurpose
 
         if (currentWritePurpose == WritePurpose.NONE) {
@@ -502,6 +603,45 @@ class MainActivity : ComponentActivity() {
     private fun handleCharacteristicValue(value: ByteArray) {
 
         val hex = value.toHexString()
+
+        if (
+            value.size >= 3 &&
+            value[0].toInt() and 0xFF == 0x40 &&
+            value[1].toInt() and 0xFF == 0x41
+        ) {
+            handleProfileWriteAck(
+                value = value,
+                hex = hex
+            )
+            return
+        }
+
+        if (
+            value.size >= 3 &&
+            value[0].toInt() and 0xFF == 0x40 &&
+            value[1].toInt() and 0xFF == 0x40
+        ) {
+            val decodedProfile =
+                C406ProfileCodec.decodeReadResponse(value)
+
+            if (decodedProfile == null) {
+                runOnUiThread {
+                    rawProfileResponse = hex
+                    statusText = "Invalid Rider Profile response"
+                    writeInProgress = false
+                }
+
+                clearPendingOperation()
+                return
+            }
+
+            runOnUiThread {
+                rawProfileResponse = hex
+            }
+
+            handleDecodedProfile(decodedProfile)
+            return
+        }
 
         if (
             value.size >= 3 &&
@@ -555,6 +695,77 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun handleProfileWriteAck(
+        value: ByteArray,
+        hex: String
+    ) {
+        runOnUiThread {
+            rawProfileResponse = hex
+        }
+
+        val expectedProfile = pendingProfileApply
+
+        if (expectedProfile == null) {
+            runOnUiThread {
+                statusText = "Unexpected 40 41 response: $hex"
+                writeInProgress = false
+            }
+            clearPendingOperation()
+            return
+        }
+
+        val success =
+            value.size == 3 &&
+                    value[2].toInt() and 0xFF == 0x00
+
+        if (success) {
+            profileVerifyPending = true
+
+            runOnUiThread {
+                statusText = "Profile ACK OK; verifying readback..."
+            }
+
+            sendProfileRead()
+        } else {
+            runOnUiThread {
+                statusText = "C406 rejected 40 41: $hex"
+                writeInProgress = false
+            }
+
+            clearPendingOperation()
+        }
+    }
+
+    private fun handleDecodedProfile(profile: C406RiderProfile) {
+        val verifyPending = profileVerifyPending
+        val expectedProfile = pendingProfileApply
+
+        if (verifyPending) {
+            profileVerifyPending = false
+
+            runOnUiThread {
+                deviceProfile = profile
+                editedProfile = profile
+                writeInProgress = false
+
+                statusText =
+                    if (expectedProfile != null && profile == expectedProfile) {
+                        "Profile verified â€” C406 updated"
+                    } else {
+                        "Profile verify failed; editor refreshed from C406"
+                    }
+            }
+
+            clearPendingOperation()
+            return
+        }
+
+        runOnUiThread {
+            deviceProfile = profile
+            editedProfile = profile
+            statusText = "Rider Profile read"
+        }
+    }
     private fun handlePagesWriteAck(
         value: ByteArray,
         hex: String
@@ -622,6 +833,8 @@ class MainActivity : ComponentActivity() {
                     editedPages = pages
                     statusText = "Pages read: ${pages.size}"
                 }
+
+                sendProfileRead()
             }
 
             ReadPurpose.PRE_WRITE -> {
@@ -873,6 +1086,10 @@ class MainActivity : ComponentActivity() {
         writePurpose = WritePurpose.NONE
         pendingOriginalPages = null
         pendingApplyPages = null
+
+        pendingProfileApply = null
+        profileWriteAwaitingGattResult = false
+        profileVerifyPending = false
     }
 
     private fun disconnectGatt() {
@@ -1543,5 +1760,6 @@ private fun ScrollIndicator(
         )
     }
 }
+
 
 
