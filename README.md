@@ -60,3 +60,7 @@ Product names and trademarks belong to their respective owners.
 OpenBike Companion is licensed under the GNU General Public License v3.0 or later (`GPL-3.0-or-later`).
 
 See `LICENSE` for the full license text.
+
+## Protocol documentation
+
+Reverse-engineered BLE protocol notes are available in [docs/PROTOCOL.md](docs/PROTOCOL.md).
