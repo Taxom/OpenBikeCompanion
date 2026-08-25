@@ -82,6 +82,18 @@ private enum class WritePurpose {
     APPLY,
     ROLLBACK
 }
+private enum class RiderProfileField(
+    val label: String,
+    val unit: String
+) {
+    AGE("Age", "years"),
+    HEIGHT("Height", "cm"),
+    RIDER_WEIGHT("Rider Weight", "kg"),
+    FTP("FTP", "W"),
+    MAX_HEART_RATE("Max Heart Rate", "bpm"),
+    LTHR("LTHR", "bpm"),
+    VEHICLE_WEIGHT("Vehicle Weight", "kg")
+}
 
 @Suppress("DEPRECATION")
 @SuppressLint("MissingPermission")
@@ -217,6 +229,9 @@ class MainActivity : ComponentActivity() {
                     devicePages = devicePages,
                     editedPages = editedPages,
                     rawPagesResponse = rawPagesResponse,
+                    deviceProfile = deviceProfile,
+                    editedProfile = editedProfile,
+                    rawProfileResponse = rawProfileResponse,
                     isScanning = isScanning,
                     statusText = statusText,
                     bluetoothEnabled = bluetoothEnabled,
@@ -233,7 +248,10 @@ class MainActivity : ComponentActivity() {
                     onDisconnect = ::disconnectGatt,
                     onUpdateField = ::updateLocalField,
                     onResetLocalChanges = ::resetLocalChanges,
-                    onApplyToC406 = ::beginSafeApply
+                    onApplyToC406 = ::beginSafeApply,
+                    onUpdateProfile = ::updateLocalProfile,
+                    onResetProfileChanges = ::resetLocalProfileChanges,
+                    onApplyProfileToC406 = ::beginProfileApply
                 )
             }
         }
@@ -1076,6 +1094,42 @@ class MainActivity : ComponentActivity() {
         editedPages = newPages
     }
 
+    private fun updateLocalProfile(profile: C406RiderProfile) {
+        if (writeInProgress) return
+        editedProfile = profile
+    }
+
+    private fun resetLocalProfileChanges() {
+        if (writeInProgress) return
+        editedProfile = deviceProfile
+    }
+
+    private fun beginProfileApply() {
+        if (!c406Session.isConnected || connectedAddress == null) {
+            statusText = "Not connected"
+            return
+        }
+
+        if (writeInProgress) {
+            return
+        }
+
+        val current = deviceProfile
+        val edited = editedProfile
+
+        if (current == null || edited == null) {
+            statusText = "No Rider Profile loaded"
+            return
+        }
+
+        if (edited == current) {
+            statusText = "No Rider Profile changes to apply"
+            return
+        }
+
+        statusText = "Writing Rider Profile..."
+        sendProfileWrite(edited)
+    }
     private fun resetLocalChanges() {
         if (writeInProgress) return
         editedPages = devicePages
@@ -1112,6 +1166,9 @@ private fun AppScreen(
     devicePages: List<PageUi>,
     editedPages: List<PageUi>,
     rawPagesResponse: String,
+    deviceProfile: C406RiderProfile?,
+    editedProfile: C406RiderProfile?,
+    rawProfileResponse: String,
     isScanning: Boolean,
     statusText: String,
     bluetoothEnabled: Boolean,
@@ -1126,7 +1183,10 @@ private fun AppScreen(
     onDisconnect: () -> Unit,
     onUpdateField: (Int, Int, Int) -> Unit,
     onResetLocalChanges: () -> Unit,
-    onApplyToC406: () -> Unit
+    onApplyToC406: () -> Unit,
+    onUpdateProfile: (C406RiderProfile) -> Unit,
+    onResetProfileChanges: () -> Unit,
+    onApplyProfileToC406: () -> Unit
 ) {
     var permissionsGranted by remember {
         mutableStateOf(hasPermissions())
@@ -1141,6 +1201,14 @@ private fun AppScreen(
     }
 
     var showApplyConfirmation by remember {
+        mutableStateOf(false)
+    }
+
+    var editingProfileField by remember {
+        mutableStateOf<RiderProfileField?>(null)
+    }
+
+    var showProfileApplyConfirmation by remember {
         mutableStateOf(false)
     }
 
@@ -1163,6 +1231,11 @@ private fun AppScreen(
     val hasLocalChanges =
         devicePages.isNotEmpty() &&
                 editedPages != devicePages
+
+    val hasProfileLocalChanges =
+        deviceProfile != null &&
+                editedProfile != null &&
+                editedProfile != deviceProfile
 
     val selectedPage =
         editedPages.firstOrNull {
@@ -1376,7 +1449,99 @@ private fun AppScreen(
                     )
                 }
             }
+
+            if (editedProfile != null) {
+                item {
+                    HorizontalDivider()
+                }
+
+                item {
+                    Text(
+                        text = "Rider Profile",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+
+                    Text(
+                        text =
+                            if (hasProfileLocalChanges) {
+                                "Local changes only â€” NOT sent to C406 yet"
+                            } else {
+                                "Showing profile confirmed on C406"
+                            },
+                        fontWeight =
+                            if (hasProfileLocalChanges) {
+                                FontWeight.Bold
+                            } else {
+                                FontWeight.Normal
+                            }
+                    )
+                }
+
+                item {
+                    RiderProfileEditor(
+                        profile = editedProfile,
+                        enabled = !writeInProgress,
+                        onFieldClick = { field ->
+                            editingProfileField = field
+                        }
+                    )
+                }
+
+                if (hasProfileLocalChanges) {
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                enabled =
+                                    connectedAddress != null &&
+                                            !writeInProgress,
+                                onClick = {
+                                    showProfileApplyConfirmation = true
+                                }
+                            ) {
+                                Text("Apply Profile")
+                            }
+
+                            OutlinedButton(
+                                enabled = !writeInProgress,
+                                onClick = onResetProfileChanges
+                            ) {
+                                Text("Discard changes")
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    Text(
+                        text = "Profile raw: $rawProfileResponse",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
         }
+    }
+
+    val profileField = editingProfileField
+    val profileForDialog = editedProfile
+
+    if (
+        profileField != null &&
+        profileForDialog != null
+    ) {
+        RiderProfileValueDialog(
+            field = profileField,
+            profile = profileForDialog,
+            onSave = { updatedProfile ->
+                onUpdateProfile(updatedProfile)
+                editingProfileField = null
+            },
+            onDismiss = {
+                editingProfileField = null
+            }
+        )
     }
 
     val fieldIndex = editingFieldIndex
@@ -1409,6 +1574,42 @@ private fun AppScreen(
         )
     }
 
+    if (showProfileApplyConfirmation) {
+        AlertDialog(
+            onDismissRequest = {
+                showProfileApplyConfirmation = false
+            },
+            title = {
+                Text("Apply Rider Profile to C406?")
+            },
+            text = {
+                Text(
+                    "The app will write the Rider Profile with 40 41, " +
+                            "wait for the C406 acknowledgement, then read 40 40 " +
+                            "back and verify the stored values."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showProfileApplyConfirmation = false
+                        onApplyProfileToC406()
+                    }
+                ) {
+                    Text("Apply")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showProfileApplyConfirmation = false
+                    }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
     if (showApplyConfirmation) {
         AlertDialog(
             onDismissRequest = {
@@ -1448,6 +1649,251 @@ private fun AppScreen(
     }
 }
 
+@Composable
+private fun RiderProfileEditor(
+    profile: C406RiderProfile,
+    enabled: Boolean,
+    onFieldClick: (RiderProfileField) -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            RiderProfileField.entries.forEachIndexed { index, field ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = enabled) {
+                            onFieldClick(field)
+                        }
+                        .padding(vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = field.label,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Text(
+                        text = riderProfileFieldDisplayValue(
+                            profile = profile,
+                            field = field
+                        )
+                    )
+                }
+
+                if (index != RiderProfileField.entries.lastIndex) {
+                    HorizontalDivider()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RiderProfileValueDialog(
+    field: RiderProfileField,
+    profile: C406RiderProfile,
+    onSave: (C406RiderProfile) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var textValue by remember(field, profile) {
+        mutableStateOf(
+            riderProfileFieldEditValue(
+                profile = profile,
+                field = field
+            )
+        )
+    }
+
+    val updatedProfile =
+        updateRiderProfileFromText(
+            profile = profile,
+            field = field,
+            text = textValue
+        )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(field.label)
+        },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                androidx.compose.material3.OutlinedTextField(
+                    value = textValue,
+                    onValueChange = {
+                        textValue = it
+                    },
+                    singleLine = true,
+                    label = {
+                        Text(field.unit)
+                    }
+                )
+
+                if (updatedProfile == null) {
+                    Text(
+                        text = "Enter a valid value",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = updatedProfile != null,
+                onClick = {
+                    updatedProfile?.let(onSave)
+                }
+            ) {
+                Text("OK")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+private fun riderProfileFieldDisplayValue(
+    profile: C406RiderProfile,
+    field: RiderProfileField
+): String {
+    return when (field) {
+        RiderProfileField.AGE ->
+            "${profile.age} years"
+
+        RiderProfileField.HEIGHT ->
+            "${profile.heightCm} cm"
+
+        RiderProfileField.RIDER_WEIGHT ->
+            "%.2f kg".format(profile.riderWeightKg)
+
+        RiderProfileField.FTP ->
+            "${profile.ftpWatts} W"
+
+        RiderProfileField.MAX_HEART_RATE ->
+            "${profile.maxHeartRateBpm} bpm"
+
+        RiderProfileField.LTHR ->
+            "${profile.lthrBpm} bpm"
+
+        RiderProfileField.VEHICLE_WEIGHT ->
+            "%.2f kg".format(profile.vehicleWeightKg)
+    }
+}
+
+private fun riderProfileFieldEditValue(
+    profile: C406RiderProfile,
+    field: RiderProfileField
+): String {
+    return when (field) {
+        RiderProfileField.AGE ->
+            profile.age.toString()
+
+        RiderProfileField.HEIGHT ->
+            profile.heightCm.toString()
+
+        RiderProfileField.RIDER_WEIGHT ->
+            "%.2f".format(profile.riderWeightKg)
+
+        RiderProfileField.FTP ->
+            profile.ftpWatts.toString()
+
+        RiderProfileField.MAX_HEART_RATE ->
+            profile.maxHeartRateBpm.toString()
+
+        RiderProfileField.LTHR ->
+            profile.lthrBpm.toString()
+
+        RiderProfileField.VEHICLE_WEIGHT ->
+            "%.2f".format(profile.vehicleWeightKg)
+    }
+}
+
+private fun updateRiderProfileFromText(
+    profile: C406RiderProfile,
+    field: RiderProfileField,
+    text: String
+): C406RiderProfile? {
+    return when (field) {
+        RiderProfileField.AGE -> {
+            val value = text.trim().toIntOrNull()
+                ?: return null
+
+            if (value !in 0..255) return null
+            profile.copy(age = value)
+        }
+
+        RiderProfileField.HEIGHT -> {
+            val value = text.trim().toIntOrNull()
+                ?: return null
+
+            if (value !in 0..255) return null
+            profile.copy(heightCm = value)
+        }
+
+        RiderProfileField.FTP -> {
+            val value = text.trim().toIntOrNull()
+                ?: return null
+
+            if (value !in 0..65535) return null
+            profile.copy(ftpWatts = value)
+        }
+
+        RiderProfileField.MAX_HEART_RATE -> {
+            val value = text.trim().toIntOrNull()
+                ?: return null
+
+            if (value !in 0..255) return null
+            profile.copy(maxHeartRateBpm = value)
+        }
+
+        RiderProfileField.LTHR -> {
+            val value = text.trim().toIntOrNull()
+                ?: return null
+
+            if (value !in 0..255) return null
+            profile.copy(lthrBpm = value)
+        }
+
+        RiderProfileField.RIDER_WEIGHT -> {
+            val value =
+                text.trim()
+                    .replace(',', '.')
+                    .toDoubleOrNull()
+                    ?: return null
+
+            val hundredths =
+                kotlin.math.round(value * 100.0).toInt()
+
+            if (hundredths !in 0..65535) return null
+
+            profile.copy(
+                riderWeightHundredthsKg = hundredths
+            )
+        }
+
+        RiderProfileField.VEHICLE_WEIGHT -> {
+            val value =
+                text.trim()
+                    .replace(',', '.')
+                    .toDoubleOrNull()
+                    ?: return null
+
+            val hundredths =
+                kotlin.math.round(value * 100.0).toInt()
+
+            if (hundredths !in 0..65535) return null
+
+            profile.copy(
+                vehicleWeightHundredthsKg = hundredths
+            )
+        }
+    }
+}
 @Composable
 private fun DeviceCard(
     device: BleDeviceUi,
@@ -1760,6 +2206,7 @@ private fun ScrollIndicator(
         )
     }
 }
+
 
 
 
