@@ -3,13 +3,7 @@
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCallback
-import android.bluetooth.BluetoothGattCharacteristic
-import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
-import android.bluetooth.BluetoothProfile
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -64,15 +58,11 @@ import com.maxpi.openbikecompanion.model.BleDeviceUi
 import com.maxpi.openbikecompanion.model.PageFieldUi
 import com.maxpi.openbikecompanion.model.PageUi
 import com.maxpi.openbikecompanion.protocol.C406Protocol.ALLOWED_METRICS_BY_FIELD
-import com.maxpi.openbikecompanion.protocol.C406Protocol.CC02_UUID
-import com.maxpi.openbikecompanion.protocol.C406Protocol.CCCD_UUID
-import com.maxpi.openbikecompanion.protocol.C406Protocol.CC_SERVICE_UUID
 import com.maxpi.openbikecompanion.protocol.C406Protocol.FIELD_POSITIONS
 import com.maxpi.openbikecompanion.protocol.C406Protocol.METRIC_NAMES
 import com.maxpi.openbikecompanion.protocol.C406PagesCodec
-import java.util.UUID
 import com.maxpi.openbikecompanion.ble.BleScanner
-import com.maxpi.openbikecompanion.ble.C406GattIo
+import com.maxpi.openbikecompanion.ble.C406GattSession
 import com.maxpi.openbikecompanion.ble.C406GattIo.StartResult
 
 
@@ -113,10 +103,6 @@ class MainActivity : ComponentActivity() {
 
     private var writeInProgress by mutableStateOf(false)
 
-    private var bluetoothGatt: BluetoothGatt? = null
-    private var cc02Characteristic: BluetoothGattCharacteristic? = null
-
-    private var negotiatedMtu = 23
 
     @Volatile
     private var readPurpose = ReadPurpose.NORMAL
@@ -160,227 +146,54 @@ class MainActivity : ComponentActivity() {
     }
 
 
-    private val gattCallback = object : BluetoothGattCallback() {
+    private val c406Session: C406GattSession by lazy {
+        C406GattSession(
+            context = this,
+            bluetoothAdapter = bluetoothAdapter,
+            onStatus = { message ->
+                runOnUiThread {
+                    statusText = message
+                }
+            },
+            onConnected = { address ->
+                runOnUiThread {
+                    connectedAddress = address
+                }
+            },
+            onDisconnected = {
+                runOnUiThread {
+                    statusText = "Disconnected"
+                    connectedAddress = null
+                    writeInProgress = false
+                }
 
-        override fun onConnectionStateChange(
-            gatt: BluetoothGatt,
-            status: Int,
-            newState: Int
-        ) {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
+                clearPendingOperation()
+            },
+            onGattError = { status ->
                 runOnUiThread {
                     statusText = "GATT error: $status"
                     connectedAddress = null
                     writeInProgress = false
                 }
+
                 clearPendingOperation()
-                closeGatt(gatt)
-                return
-            }
-
-            when (newState) {
-                BluetoothProfile.STATE_CONNECTED -> {
-                    negotiatedMtu = 23
-
-                    runOnUiThread {
-                        connectedAddress = gatt.device.address
-                        statusText = "Connected; negotiating MTU..."
-                    }
-
-                    val mtuRequested = try {
-                        gatt.requestMtu(247)
-                    } catch (_: SecurityException) {
-                        false
-                    }
-
-                    if (!mtuRequested) {
-                        discoverServicesSafe(gatt)
-                    }
-                }
-
-                BluetoothProfile.STATE_DISCONNECTED -> {
-                    runOnUiThread {
-                        statusText = "Disconnected"
-                        connectedAddress = null
-                        cc02Characteristic = null
-                        writeInProgress = false
-                    }
-
-                    clearPendingOperation()
-                    closeGatt(gatt)
-                }
-            }
-        }
-
-        override fun onMtuChanged(
-            gatt: BluetoothGatt,
-            mtu: Int,
-            status: Int
-        ) {
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                negotiatedMtu = mtu
-            }
-
-            runOnUiThread {
-                statusText =
-                    if (status == BluetoothGatt.GATT_SUCCESS) {
-                        "MTU $mtu; discovering services..."
-                    } else {
-                        "MTU request failed; discovering services..."
-                    }
-            }
-
-            discoverServicesSafe(gatt)
-        }
-
-        override fun onServicesDiscovered(
-            gatt: BluetoothGatt,
-            status: Int
-        ) {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                runOnUiThread {
-                    statusText = "Service discovery failed: $status"
-                }
-                return
-            }
-
-            val service = gatt.getService(CC_SERVICE_UUID)
-            val characteristic = service?.getCharacteristic(CC02_UUID)
-
-            if (service == null || characteristic == null) {
-                runOnUiThread {
-                    statusText = "C406 command service not found"
-                }
-                return
-            }
-
-            cc02Characteristic = characteristic
-
-            val notifyEnabled = try {
-                gatt.setCharacteristicNotification(characteristic, true)
-            } catch (_: SecurityException) {
-                false
-            }
-
-            if (!notifyEnabled) {
-                runOnUiThread {
-                    statusText = "Could not enable CC02 notifications"
-                }
-                return
-            }
-
-            val cccd = characteristic.getDescriptor(CCCD_UUID)
-
-            if (cccd == null) {
-                runOnUiThread {
-                    statusText = "CC02 notification descriptor not found"
-                }
-                return
-            }
-
-            try {
-                cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                val started = gatt.writeDescriptor(cccd)
-
-                runOnUiThread {
-                    statusText =
-                        if (started) {
-                            "Enabling notifications..."
-                        } else {
-                            "Could not write notification descriptor"
-                        }
-                }
-            } catch (_: SecurityException) {
-                runOnUiThread {
-                    statusText = "Bluetooth permission lost"
-                }
-            }
-        }
-
-        override fun onDescriptorWrite(
-            gatt: BluetoothGatt,
-            descriptor: BluetoothGattDescriptor,
-            status: Int
-        ) {
-            if (descriptor.uuid != CCCD_UUID) return
-
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                runOnUiThread {
-                    statusText = "Notification setup failed: $status"
-                }
-                return
-            }
-
-            runOnUiThread {
-                statusText = "Connected; reading Pages..."
-            }
-
-            sendPagesRead(
-                gatt = gatt,
-                purpose = ReadPurpose.NORMAL
-            )
-        }
-
-        override fun onCharacteristicWrite(
-            gatt: BluetoothGatt,
-            characteristic: BluetoothGattCharacteristic,
-            status: Int
-        ) {
-            if (characteristic.uuid != CC02_UUID) return
-
-            val currentWritePurpose = writePurpose
-
-            if (currentWritePurpose == WritePurpose.NONE) {
-                return
-            }
-
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                runOnUiThread {
-                    statusText =
-                        when (currentWritePurpose) {
-                            WritePurpose.APPLY ->
-                                "40 43 sent; waiting for C406 ACK..."
-                            WritePurpose.ROLLBACK ->
-                                "Rollback sent; waiting for C406 ACK..."
-                            WritePurpose.NONE ->
-                                statusText
-                        }
-                }
-            } else {
-                writePurpose = WritePurpose.NONE
-
-                runOnUiThread {
-                    statusText =
-                        "GATT write failed: $status; checking C406..."
-                }
-
+            },
+            onReady = {
                 sendPagesRead(
-                    gatt = gatt,
-                    purpose =
-                        if (currentWritePurpose == WritePurpose.APPLY) {
-                            ReadPurpose.RECOVER_APPLY_ERROR
-                        } else {
-                            ReadPurpose.RECOVER_ROLLBACK_ERROR
-                        }
+                    purpose = ReadPurpose.NORMAL
                 )
+            },
+            onWriteResult = { success, status ->
+                handleGattWriteResult(
+                    success = success,
+                    status = status
+                )
+            },
+            onValueReceived = { value ->
+                handleCharacteristicValue(value)
             }
-        }
-
-        @Deprecated(
-            "Deprecated in newer Android APIs; required for API 24 compatibility"
         )
-        override fun onCharacteristicChanged(
-            gatt: BluetoothGatt,
-            characteristic: BluetoothGattCharacteristic
-        ) {
-            handleCharacteristicValue(
-                gatt = gatt,
-                uuid = characteristic.uuid,
-                value = characteristic.value
-            )
-        }
     }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -526,64 +339,12 @@ class MainActivity : ComponentActivity() {
         rawPagesResponse = ""
         statusText = "Connecting..."
 
-        val device = try {
-            bluetoothAdapter?.getRemoteDevice(address)
-        } catch (_: IllegalArgumentException) {
-            null
-        } catch (_: SecurityException) {
-            null
-        }
-
-        if (device == null) {
-            statusText = "Could not get Bluetooth device"
-            return
-        }
-
-        bluetoothGatt = try {
-            device.connectGatt(
-                this,
-                false,
-                gattCallback,
-                BluetoothDevice.TRANSPORT_LE
-            )
-        } catch (_: SecurityException) {
-            null
-        }
-
-        if (bluetoothGatt == null) {
-            statusText = "Could not start GATT connection"
-        }
+        c406Session.connect(address)
     }
-
-    private fun discoverServicesSafe(gatt: BluetoothGatt) {
-        when (C406GattIo.discoverServices(gatt)) {
-            StartResult.STARTED -> {
-                runOnUiThread {
-                    statusText = "Discovering services..."
-                }
-            }
-
-            StartResult.NOT_STARTED -> {
-                runOnUiThread {
-                    statusText = "Could not start service discovery"
-                }
-            }
-
-            StartResult.PERMISSION_DENIED -> {
-                runOnUiThread {
-                    statusText = "Bluetooth permission lost"
-                }
-            }
-        }
-    }
-
     private fun sendPagesRead(
-        gatt: BluetoothGatt,
         purpose: ReadPurpose
     ) {
-        val characteristic = cc02Characteristic
-
-        if (characteristic == null) {
+        if (!c406Session.isReady) {
             runOnUiThread {
                 statusText = "CC02 unavailable"
                 writeInProgress = false
@@ -595,10 +356,8 @@ class MainActivity : ComponentActivity() {
         readPurpose = purpose
 
         when (
-            C406GattIo.write(
-                gatt = gatt,
-                characteristic = characteristic,
-                value = byteArrayOf(0x40, 0x42)
+            c406Session.write(
+                byteArrayOf(0x40, 0x42)
             )
         ) {
             StartResult.STARTED -> Unit
@@ -630,15 +389,11 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-
     private fun sendPagesWrite(
-        gatt: BluetoothGatt,
         pages: List<PageUi>,
         purpose: WritePurpose
     ) {
-        val characteristic = cc02Characteristic
-
-        if (characteristic == null) {
+        if (!c406Session.isReady) {
             runOnUiThread {
                 statusText = "CC02 unavailable"
                 writeInProgress = false
@@ -658,12 +413,12 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        val maxPayload = negotiatedMtu - 3
+        val maxPayload = c406Session.negotiatedMtu - 3
 
         if (packet.size > maxPayload) {
             runOnUiThread {
                 statusText =
-                    "MTU $negotiatedMtu too small for ${packet.size}-byte Pages write"
+                    "MTU ${c406Session.negotiatedMtu} too small for ${packet.size}-byte Pages write"
                 writeInProgress = false
             }
             clearPendingOperation()
@@ -672,13 +427,7 @@ class MainActivity : ComponentActivity() {
 
         writePurpose = purpose
 
-        when (
-            C406GattIo.write(
-                gatt = gatt,
-                characteristic = characteristic,
-                value = packet
-            )
-        ) {
+        when (c406Session.write(packet)) {
             StartResult.STARTED -> Unit
 
             StartResult.NOT_STARTED -> {
@@ -689,7 +438,6 @@ class MainActivity : ComponentActivity() {
                 }
 
                 sendPagesRead(
-                    gatt = gatt,
                     purpose =
                         if (purpose == WritePurpose.APPLY) {
                             ReadPurpose.RECOVER_APPLY_ERROR
@@ -711,13 +459,47 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-
-    private fun handleCharacteristicValue(
-        gatt: BluetoothGatt,
-        uuid: UUID,
-        value: ByteArray?
+    private fun handleGattWriteResult(
+        success: Boolean,
+        status: Int
     ) {
-        if (uuid != CC02_UUID || value == null) return
+        val currentWritePurpose = writePurpose
+
+        if (currentWritePurpose == WritePurpose.NONE) {
+            return
+        }
+
+        if (success) {
+            runOnUiThread {
+                statusText =
+                    when (currentWritePurpose) {
+                        WritePurpose.APPLY ->
+                            "40 43 sent; waiting for C406 ACK..."
+                        WritePurpose.ROLLBACK ->
+                            "Rollback sent; waiting for C406 ACK..."
+                        WritePurpose.NONE ->
+                            statusText
+                    }
+            }
+        } else {
+            writePurpose = WritePurpose.NONE
+
+            runOnUiThread {
+                statusText =
+                    "GATT write failed: $status; checking C406..."
+            }
+
+            sendPagesRead(
+                purpose =
+                    if (currentWritePurpose == WritePurpose.APPLY) {
+                        ReadPurpose.RECOVER_APPLY_ERROR
+                    } else {
+                        ReadPurpose.RECOVER_ROLLBACK_ERROR
+                    }
+            )
+        }
+    }
+    private fun handleCharacteristicValue(value: ByteArray) {
 
         val hex = value.toHexString()
 
@@ -727,7 +509,6 @@ class MainActivity : ComponentActivity() {
             value[1].toInt() and 0xFF == 0x43
         ) {
             handlePagesWriteAck(
-                gatt = gatt,
                 value = value,
                 hex = hex
             )
@@ -761,7 +542,6 @@ class MainActivity : ComponentActivity() {
             }
 
             handleDecodedPages(
-                gatt = gatt,
                 pages = decodedPages,
                 purpose = purpose
             )
@@ -776,7 +556,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handlePagesWriteAck(
-        gatt: BluetoothGatt,
         value: ByteArray,
         hex: String
     ) {
@@ -809,7 +588,6 @@ class MainActivity : ComponentActivity() {
             }
 
             sendPagesRead(
-                gatt = gatt,
                 purpose =
                     if (purpose == WritePurpose.APPLY) {
                         ReadPurpose.VERIFY_WRITE
@@ -823,7 +601,6 @@ class MainActivity : ComponentActivity() {
             }
 
             sendPagesRead(
-                gatt = gatt,
                 purpose =
                     if (purpose == WritePurpose.APPLY) {
                         ReadPurpose.RECOVER_APPLY_ERROR
@@ -835,7 +612,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleDecodedPages(
-        gatt: BluetoothGatt,
         pages: List<PageUi>,
         purpose: ReadPurpose
     ) {
@@ -879,7 +655,6 @@ class MainActivity : ComponentActivity() {
                 }
 
                 sendPagesWrite(
-                    gatt = gatt,
                     pages = proposed,
                     purpose = WritePurpose.APPLY
                 )
@@ -905,7 +680,6 @@ class MainActivity : ComponentActivity() {
                     }
 
                     sendPagesWrite(
-                        gatt = gatt,
                         pages = original,
                         purpose = WritePurpose.ROLLBACK
                     )
@@ -970,7 +744,6 @@ class MainActivity : ComponentActivity() {
                     }
 
                     sendPagesWrite(
-                        gatt = gatt,
                         pages = original,
                         purpose = WritePurpose.ROLLBACK
                     )
@@ -1022,9 +795,7 @@ class MainActivity : ComponentActivity() {
 
 
     private fun beginSafeApply() {
-        val gatt = bluetoothGatt
-
-        if (gatt == null || connectedAddress == null) {
+        if (!c406Session.isConnected || connectedAddress == null) {
             statusText = "Not connected"
             return
         }
@@ -1050,7 +821,6 @@ class MainActivity : ComponentActivity() {
         statusText = "Safety read before write..."
 
         sendPagesRead(
-            gatt = gatt,
             purpose = ReadPurpose.PRE_WRITE
         )
     }
@@ -1106,38 +876,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun disconnectGatt() {
-        val gatt = bluetoothGatt
-        bluetoothGatt = null
-        cc02Characteristic = null
-        negotiatedMtu = 23
-
+        c406Session.disconnect()
         clearPendingOperation()
-
-        if (gatt != null) {
-            try {
-                gatt.disconnect()
-            } catch (_: SecurityException) {
-            }
-
-            try {
-                gatt.close()
-            } catch (_: Exception) {
-            }
-        }
-
         connectedAddress = null
         writeInProgress = false
-    }
-
-    private fun closeGatt(gatt: BluetoothGatt) {
-        if (bluetoothGatt === gatt) {
-            bluetoothGatt = null
-        }
-
-        try {
-            gatt.close()
-        } catch (_: Exception) {
-        }
     }
 }
 
@@ -1801,4 +1543,5 @@ private fun ScrollIndicator(
         )
     }
 }
+
 
