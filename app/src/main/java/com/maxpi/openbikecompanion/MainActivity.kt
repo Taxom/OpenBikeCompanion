@@ -10,8 +10,6 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
-import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanResult
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -73,6 +71,7 @@ import com.maxpi.openbikecompanion.protocol.C406Protocol.FIELD_POSITIONS
 import com.maxpi.openbikecompanion.protocol.C406Protocol.METRIC_NAMES
 import com.maxpi.openbikecompanion.protocol.C406PagesCodec
 import java.util.UUID
+import com.maxpi.openbikecompanion.ble.BleScanner
 
 
 private enum class ReadPurpose {
@@ -131,46 +130,33 @@ class MainActivity : ComponentActivity() {
         manager.adapter
     }
 
-    private val scanCallback = object : ScanCallback() {
-        override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val device = result.device
+    private val bleScanner: BleScanner by lazy {
+        BleScanner(
+            bluetoothAdapter = bluetoothAdapter,
+            onDeviceFound = { item ->
+                runOnUiThread {
+                    val index = devices.indexOfFirst { it.address == item.address }
 
-            val name = try {
-                device.name ?: result.scanRecord?.deviceName ?: "(unnamed)"
-            } catch (_: SecurityException) {
-                result.scanRecord?.deviceName ?: "(unnamed)"
-            }
+                    if (index >= 0) {
+                        devices[index] = item
+                    } else {
+                        devices.add(item)
+                    }
 
-            val item = BleDeviceUi(
-                address = device.address,
-                name = name,
-                rssi = result.rssi
-            )
-
-            runOnUiThread {
-                val index = devices.indexOfFirst { it.address == item.address }
-
-                if (index >= 0) {
-                    devices[index] = item
-                } else {
-                    devices.add(item)
+                    val sorted = devices.sortedByDescending { it.rssi }
+                    devices.clear()
+                    devices.addAll(sorted)
                 }
-
-                val sorted = devices.sortedByDescending { it.rssi }
-                devices.clear()
-                devices.addAll(sorted)
-
-
+            },
+            onScanFailed = { errorCode ->
+                runOnUiThread {
+                    isScanning = false
+                    statusText = "BLE scan failed: $errorCode"
+                }
             }
-        }
-
-        override fun onScanFailed(errorCode: Int) {
-            runOnUiThread {
-                isScanning = false
-                statusText = "BLE scan failed: $errorCode"
-            }
-        }
+        )
     }
+
 
     private val gattCallback = object : BluetoothGattCallback() {
 
@@ -504,9 +490,7 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        val scanner = bluetoothAdapter?.bluetoothLeScanner
-
-        if (scanner == null) {
+        if (!bleScanner.isAvailable()) {
             statusText = "BLE scanner unavailable"
             return
         }
@@ -514,14 +498,10 @@ class MainActivity : ComponentActivity() {
         devices.clear()
         statusText = "Scanning..."
         isScanning = true
-        scanner.startScan(scanCallback)
+        bleScanner.start()
     }
-
     private fun stopScan() {
-        try {
-            bluetoothAdapter?.bluetoothLeScanner?.stopScan(scanCallback)
-        } catch (_: SecurityException) {
-        }
+        bleScanner.stop()
 
         isScanning = false
 
