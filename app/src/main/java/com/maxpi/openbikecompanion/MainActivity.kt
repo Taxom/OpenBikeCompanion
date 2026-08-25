@@ -62,144 +62,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.maxpi.openbikecompanion.ui.theme.OpenBikeCompanionTheme
+import com.maxpi.openbikecompanion.model.BleDeviceUi
+import com.maxpi.openbikecompanion.model.PageFieldUi
+import com.maxpi.openbikecompanion.model.PageUi
+import com.maxpi.openbikecompanion.protocol.C406Protocol.ALLOWED_METRICS_BY_FIELD
+import com.maxpi.openbikecompanion.protocol.C406Protocol.CC02_UUID
+import com.maxpi.openbikecompanion.protocol.C406Protocol.CCCD_UUID
+import com.maxpi.openbikecompanion.protocol.C406Protocol.CC_SERVICE_UUID
+import com.maxpi.openbikecompanion.protocol.C406Protocol.FIELD_POSITIONS
+import com.maxpi.openbikecompanion.protocol.C406Protocol.METRIC_NAMES
+import com.maxpi.openbikecompanion.protocol.C406PagesCodec
 import java.util.UUID
 
-
-private val CC_SERVICE_UUID: UUID =
-    UUID.fromString("8ce5cc01-0a4d-11e9-ab14-d663bd873d93")
-
-private val CC02_UUID: UUID =
-    UUID.fromString("8ce5cc02-0a4d-11e9-ab14-d663bd873d93")
-
-private val CCCD_UUID: UUID =
-    UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
-
-private val FIELD_POSITIONS = listOf(
-    "Big",
-    "Row 1 Left",
-    "Row 1 Right",
-    "Row 2 Left",
-    "Row 2 Right",
-    "Row 3 Left",
-    "Row 3 Right"
-)
-
-private val METRIC_NAMES = mapOf(
-    0x11 to "Clock",
-
-    0x20 to "Lap Max Grade",
-    0x21 to "Lap Avg Grade",
-    0x22 to "Max Grade",
-    0x23 to "Avg Grade",
-    0x24 to "Grade",
-
-    0x30 to "Lap Distance",
-    0x31 to "Distance",
-
-    0x40 to "Lap Max Cadence",
-    0x41 to "Lap Avg Cadence",
-    0x42 to "Max Cadence",
-    0x43 to "Avg Cadence",
-    0x44 to "Cadence",
-
-    0x50 to "Lap Calories",
-    0x51 to "Calories",
-
-    0x60 to "Lap Max Power",
-    0x61 to "Lap Avg Power",
-    0x62 to "Max Power",
-    0x63 to "Avg Power",
-    0x64 to "Power",
-
-    0x70 to "Lap Time",
-    0x71 to "Total Time",
-
-    0x80 to "Lap Max Altitude",
-    0x81 to "Lap Avg Altitude",
-    0x82 to "Max Altitude",
-    0x83 to "Avg Altitude",
-    0x84 to "Altitude",
-
-    0x90 to "Lap Max Speed",
-    0x91 to "Lap Avg Speed",
-    0x92 to "Max Speed",
-    0x93 to "Avg Speed",
-    0x94 to "Speed",
-
-    0xA0 to "Lap Max Heart Rate",
-    0xA1 to "Lap Avg Heart Rate",
-    0xA2 to "Max Heart Rate",
-    0xA3 to "Avg Heart Rate",
-    0xA4 to "Heart Rate"
-)
-
-/*
- * Conservative whitelist based on the physical segment layout and the tests
- * already performed on this C406.
- */
-private val ALLOWED_METRICS_BY_FIELD = mapOf(
-    0 to listOf(
-        0x94, // Speed
-        0x64  // Power
-    ),
-
-    1 to listOf(
-        0x24, 0x23, 0x22, 0x21, 0x20,
-        0x31, 0x30,
-        0x44, 0x43, 0x42, 0x41, 0x40,
-        0x11
-    ),
-
-    2 to listOf(
-        0x51, 0x50,
-        0x64, 0x63, 0x62, 0x61, 0x60,
-        0x71, 0x70,
-        0x11
-    ),
-
-    3 to listOf(
-        0x84, 0x83, 0x82, 0x81, 0x80,
-        0x94, 0x93, 0x92, 0x91, 0x90,
-        0xA4, 0xA3, 0xA2, 0xA1, 0xA0
-    ),
-
-    4 to listOf(
-        0x84, 0x83, 0x82, 0x81, 0x80,
-        0x94, 0x93, 0x92, 0x91, 0x90,
-        0xA4, 0xA3, 0xA2, 0xA1, 0xA0
-    ),
-
-    5 to listOf(
-        0x51, 0x50,
-        0x64, 0x63, 0x62, 0x61, 0x60,
-        0x71, 0x70,
-        0x11
-    ),
-
-    6 to listOf(
-        0x24, 0x23, 0x22, 0x21, 0x20,
-        0x31, 0x30,
-        0x44, 0x43, 0x42, 0x41, 0x40,
-        0x11
-    )
-)
-
-data class BleDeviceUi(
-    val address: String,
-    val name: String,
-    val rssi: Int
-)
-
-data class PageFieldUi(
-    val position: String,
-    val code: Int,
-    val name: String
-)
-
-data class PageUi(
-    val number: Int,
-    val fields: List<PageFieldUi>
-)
 
 private enum class ReadPurpose {
     NORMAL,
@@ -784,7 +658,7 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        val packet = buildPagesWritePacket(pages)
+        val packet = C406PagesCodec.buildPagesWritePacket(pages)
 
         if (packet == null) {
             runOnUiThread {
@@ -873,7 +747,7 @@ class MainActivity : ComponentActivity() {
             value[1].toInt() and 0xFF == 0x42 &&
             value[2].toInt() and 0xFF == 0x00
         ) {
-            val decodedPages = decodePagesResponse(value)
+            val decodedPages = C406PagesCodec.decodePagesResponse(value)
 
             if (decodedPages == null) {
                 runOnUiThread {
@@ -1026,7 +900,7 @@ class MainActivity : ComponentActivity() {
                     runOnUiThread {
                         devicePages = pages
                         editedPages = pages
-                        statusText = "Apply verified â€” C406 Pages updated"
+                        statusText = "Apply verified — C406 Pages updated"
                         writeInProgress = false
                     }
 
@@ -1151,76 +1025,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun decodePagesResponse(
-        value: ByteArray
-    ): List<PageUi>? {
-        if (value.size < 4) return null
 
-        val pageCount = value[3].toInt() and 0xFF
-        val expectedLength = 4 + pageCount * 7
 
-        if (value.size != expectedLength) {
-            return null
-        }
-
-        return buildList {
-            for (pageIndex in 0 until pageCount) {
-                val fields = buildList {
-                    for (fieldIndex in 0 until 7) {
-                        val offset = 4 + pageIndex * 7 + fieldIndex
-                        val code = value[offset].toInt() and 0xFF
-
-                        add(
-                            PageFieldUi(
-                                position = FIELD_POSITIONS[fieldIndex],
-                                code = code,
-                                name =
-                                    METRIC_NAMES[code]
-                                        ?: "Unknown 0x%02X".format(code)
-                            )
-                        )
-                    }
-                }
-
-                add(
-                    PageUi(
-                        number = pageIndex + 1,
-                        fields = fields
-                    )
-                )
-            }
-        }
-    }
-
-    private fun buildPagesWritePacket(
-        pages: List<PageUi>
-    ): ByteArray? {
-        if (pages.isEmpty() || pages.size > 255) {
-            return null
-        }
-
-        val sortedPages = pages.sortedBy { it.number }
-
-        if (sortedPages.any { it.fields.size != 7 }) {
-            return null
-        }
-
-        val packet = ByteArray(3 + sortedPages.size * 7)
-
-        packet[0] = 0x40
-        packet[1] = 0x43
-        packet[2] = sortedPages.size.toByte()
-
-        var offset = 3
-
-        for (page in sortedPages) {
-            for (field in page.fields) {
-                packet[offset++] = field.code.toByte()
-            }
-        }
-
-        return packet
-    }
 
     private fun beginSafeApply() {
         val gatt = bluetoothGatt
@@ -1435,7 +1241,7 @@ private fun AppScreen(
             if (writeInProgress) {
                 item {
                     Text(
-                        text = "Write/verify in progress â€” do not disconnect",
+                        text = "Write/verify in progress — do not disconnect",
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -1528,7 +1334,7 @@ private fun AppScreen(
                     Text(
                         text =
                             if (hasLocalChanges) {
-                                "Local changes only â€” NOT sent to C406 yet"
+                                "Local changes only — NOT sent to C406 yet"
                             } else {
                                 "Showing configuration confirmed on C406"
                             },
@@ -1909,7 +1715,7 @@ private fun MetricPickerDialog(
                                     Text(
                                         text =
                                             if (selected) {
-                                                "âœ“ $name"
+                                                "✓ $name"
                                             } else {
                                                 name
                                             },
@@ -2002,3 +1808,4 @@ private fun ScrollIndicator(
         )
     }
 }
+
